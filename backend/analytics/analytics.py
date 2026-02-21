@@ -1,70 +1,100 @@
 import sqlite3
 import pandas as pd
-import joblib
-from textblob import TextBlob
-import os
+from pathlib import Path
+from insight_engine import generate_insight
 
-DB_PATH = "backend/database/usage.db"
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parents[2]
+DB_PATH = BASE_DIR / "database" / "usage.db"
 
-REFINED_MODEL_PATH = "backend/models/high_cost_model_refined.pkl"
-
-refined_model = joblib.load(REFINED_MODEL_PATH)
-
-def get_connection():
-    return sqlite3.connect(DB_PATH)
-
-def fetch_usage_data():
-    conn = get_connection()
-    df = pd.read_sql("SELECT * FROM usage_metrics", conn)
+def load_data():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT * FROM chatbot_usage", conn)
     conn.close()
     return df
 
-def compute_kpis(user_tier=None, model_tier=None, start_date=None, end_date=None):
-    df = fetch_usage_data()
+def check_missing(df):
+    return df.isnull().sum()
 
-    if start_date:
-        df = df[df['created_at'] >= start_date]
-    if end_date:
-        df = df[df['created_at'] <= end_date]
-    if user_tier:
-        df = df[df['user_tier'] == user_tier]
-    if model_tier:
-        df = df[df['model_tier'] == model_tier]
+def basic_stats(df):
+    return df.describe()
 
-    tier_summary = df.groupby("user_tier")["total_cost_usd"].agg(
-        total_cost="sum",
-        avg_cost="mean"
+def detect_outliers_iqr(df, column):
+    Q1 = df[column].quantile(0.25)
+    Q3 = df[column].quantile(0.75)
+    IQR = Q3 - Q1
+
+    lower = Q1 - 1.5 * IQR
+    upper = Q3 + 1.5 * IQR
+
+    outliers = df[(df[column] < lower) | (df[column] > upper)]
+    return outliers, lower, upper
+
+def tier_distribution(df):
+    return df.groupby("user_tier")["total_cost_usd"].agg(
+        count="count",
+        avg_cost="mean",
+        total_cost="sum"
     ).reset_index()
 
-    anomaly_rate = df[["z_anomaly_flag", "iso_anomaly_flag"]].any(axis=1).mean() * 100
+def generate_structured_summary(df):
+    outliers, lower, upper = detect_outliers_iqr(df, "total_cost_usd")
 
-    features = ["msg_count_5min", "model_tier_encoded", "user_tier_encoded"]
-    df_features = df[features]
-    df["high_cost_risk_prob"] = refined_model.predict_proba(df_features)[:,1]
-
-    high_risk_avg = df["high_cost_risk_prob"].mean() * 100
-
-    return {
-        "tier_summary": tier_summary.to_dict(orient="records"),
-        "anomaly_rate_percent": round(anomaly_rate,2),
-        "average_high_cost_risk_percent": round(high_risk_avg,2)
+    summary = {
+        "total_rows": len(df),
+        "avg_cost": round(df["total_cost_usd"].mean(), 4),
+        "max_cost": round(df["total_cost_usd"].max(), 4),
+        "min_cost": round(df["total_cost_usd"].min(), 4),
+        "outlier_count": len(outliers),
+        "cost_iqr_bounds": (round(lower,4), round(upper,4)),
+        "tier_distribution": tier_distribution(df).to_dict(orient="records")
     }
 
+    return summary
 
-def analyze_text_logs(df):
-    """
-    df: DataFrame with 'conversation_text' column
-    Returns: dict with average sentiment and sample analysis
-    """
-    if 'conversation_text' not in df.columns:
-        return {"average_sentiment": None, "total_logs": 0}
+def build_llm_prompt(summary):
+    prompt = f"""
+You are a senior analytics consultant.
 
-    df['sentiment'] = df['conversation_text'].apply(lambda x: TextBlob(x).sentiment.polarity)
-    avg_sentiment = df['sentiment'].mean()
+Dataset Overview:
+- Total conversations: {summary['total_rows']}
+- Average cost per conversation: ${summary['avg_cost']}
+- Maximum observed cost: ${summary['max_cost']}
+- Minimum observed cost: ${summary['min_cost']}
+- Statistical outliers detected (IQR method): {summary['outlier_count']}
+- Cost IQR bounds: {summary['cost_iqr_bounds']}
 
-    return {
-        "average_sentiment": round(avg_sentiment, 2),
-        "total_logs": len(df),
-        "sample_logs": df[['conversation_text','sentiment']].head(5).to_dict(orient="records")
-    }
+User Tier Breakdown:
+"""
+
+    for tier in summary["tier_distribution"]:
+        prompt += f"""
+Tier {tier['user_tier']}:
+- Conversations: {tier['count']}
+- Average cost: ${round(tier['avg_cost'],4)}
+- Total cost: ${round(tier['total_cost'],2)}
+"""
+
+    prompt += "\nProvide 5 executive-level analytical insights focusing on cost drivers, risk patterns, and business implications."
+
+    return prompt
+
+def main():
+    df = load_data()
+
+    print("\nDataset Shape:", df.shape)
+    print("\nMissing Values:\n", check_missing(df))
+    print("\nBasic Statistics:\n", basic_stats(df))
+
+    summary = generate_structured_summary(df)
+
+    print("\nStructured Summary:")
+    for k, v in summary.items():
+        print(f"{k}: {v}")
+
+    insights = generate_insight(summary)
+
+    print("\nExecutive Insights:\n")
+    print(insights)
+
+if __name__ == "__main__":
+    main()

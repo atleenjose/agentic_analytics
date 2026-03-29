@@ -1,0 +1,2 @@
+total_conversations,total_cost_usd,avg_cost_usd,median_cost_usd,max_cost_usd,anomaly_count,anomaly_rate_pct,high_cost_count,high_cost_rate_pct
+740,457.13,0.6177,0.525,1.8,37,5.0,37,5.0

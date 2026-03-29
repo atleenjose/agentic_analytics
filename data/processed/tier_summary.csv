@@ -1,0 +1,4 @@
+model_tier,model_tier_label,conversations,avg_cost,total_cost,anomalies,high_cost
+1,Basic,254,0.3034,77.06,13,0
+2,Standard,265,0.6327,167.67,5,0
+3,Premium,221,0.9611,212.4,19,37

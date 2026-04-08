@@ -41,7 +41,7 @@ LLM_PROVIDER   = os.getenv("LLM_PROVIDER", "groq")
 MOCK_MODE      = os.getenv("MOCK_MODE", "false").lower() == "true"
 
 GROQ_MODEL   = "llama-3.1-70b-versatile"
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -237,22 +237,92 @@ def _call_groq(messages: list, tools: list) -> dict:
 
 
 def _call_gemini(messages: list, tools: list) -> dict:
-    """Google Gemini free tier — aistudio.google.com"""
-    # Convert OpenAI-format messages to Gemini format
+    import json
+
+    gemini_tools = [{
+        "function_declarations": [
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["parameters"],
+            }
+            for t in tools
+        ]
+    }]
+
     contents = []
     for m in messages:
-        role = "model" if m["role"] == "assistant" else "user"
-        contents.append({"role": role, "parts": [{"text": str(m.get("content",""))}]})
+        if m["role"] == "system":
+            continue
+        if m["role"] == "tool":
+            contents.append({
+                "role": "user",
+                "parts": [{
+                    "functionResponse": {
+                        "name": m.get("name", "tool"),
+                        "response": {"content": m["content"]}
+                    }
+                }]
+            })
+        elif m["role"] == "assistant" and m.get("tool_calls"):
+            parts = []
+            for tc in m["tool_calls"]:
+                parts.append({
+                    "functionCall": {
+                        "name": tc["function"]["name"],
+                        "args": json.loads(tc["function"]["arguments"])
+                    }
+                })
+            contents.append({"role": "model", "parts": parts})
+        else:
+            role = "model" if m["role"] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": str(m.get("content", ""))}]})
+
+    system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
 
     resp = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
-        json={"contents": contents, "generationConfig": {"maxOutputTokens": 1024}},
+        json={
+            "systemInstruction": {"parts": [{"text": system_msg}]},
+            "contents": contents,
+            "tools": gemini_tools,
+            "generationConfig": {"maxOutputTokens": 1024},
+        },
         timeout=30,
     )
     resp.raise_for_status()
     data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return {"choices": [{"message": {"role":"assistant","content": text}, "finish_reason":"stop"}]}
+
+    candidate = data["candidates"][0]["content"]
+    parts = candidate.get("parts", [])
+
+    func_calls = [p["functionCall"] for p in parts if "functionCall" in p]
+    if func_calls:
+        tool_calls = [
+            {
+                "id": f"gemini_{i}",
+                "type": "function",
+                "function": {
+                    "name": fc["name"],
+                    "arguments": json.dumps(fc.get("args", {}))
+                }
+            }
+            for i, fc in enumerate(func_calls)
+        ]
+        return {
+            "choices": [{
+                "message": {"role": "assistant", "content": None, "tool_calls": tool_calls},
+                "finish_reason": "tool_calls"
+            }]
+        }
+
+    text = next((p["text"] for p in parts if "text" in p), "")
+    return {
+        "choices": [{
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }]
+    }
 
 
 # ── Agent response ─────────────────────────────────────────────────────────────

@@ -18,7 +18,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
 DB_PATH = BASE_DIR / "data" / "usage.db"
-MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true" or not os.getenv("ANTHROPIC_API_KEY", "")
+MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true" or (
+    not os.getenv("ANTHROPIC_API_KEY", "") and not os.getenv("GEMINI_API_KEY", "")
+)
 
 from backend.agent.agent import run_agent
 from backend.agent.tools import generate_plot
@@ -101,11 +103,11 @@ CHART_LAYOUT = dict(
 with st.sidebar:
     st.markdown("### ◈ Agentic Analytics")
     mode_color = "#e8a328" if MOCK_MODE else "#2dbd7c"
-    mode_label = "Mock mode — no API key" if MOCK_MODE else "Live — Claude API"
+    mode_label = "Mock mode — no API key" if MOCK_MODE else "Live — Gemini API"
     st.markdown(f'<span class="mode-badge" style="background:rgba(124,106,247,0.1);color:{mode_color}">{mode_label}</span>', unsafe_allow_html=True)
 
     st.markdown("---")
-    page = st.radio("", ["Dashboard", "Agent Chat", "Anomaly Explorer", "Model Explorer"], label_visibility="collapsed")
+    page = st.radio("Navigation", ["Dashboard", "Agent Chat", "Anomaly Explorer", "Model Explorer"], label_visibility="collapsed")
 
     st.markdown("---")
     st.markdown("**Filters**")
@@ -204,9 +206,9 @@ if page == "Dashboard":
 elif page == "Agent Chat":
     st.markdown("## Ask the AI analyst")
     if MOCK_MODE:
-        st.info("Running in mock mode — tools execute against real data, LLM reasoning is rule-based. Add ANTHROPIC_API_KEY to .env for full Claude-powered analysis.")
+        st.info("Running in mock mode — tools execute against real data, LLM reasoning is rule-based. Add GEMINI_API_KEY to .env for full Gemini-powered analysis.")
     else:
-        st.success("Claude API connected — full agentic mode active.")
+        st.success("Gemini API connected — full agentic mode active.")
 
     # Suggested questions
     st.markdown("**Try asking:**")
@@ -290,7 +292,7 @@ elif page == "Anomaly Explorer":
     with col1:
         fig = px.scatter(df, x="tokens_5min", y="total_cost_usd",
                          color=df["iso_anomaly_flag"].map({1: "Anomaly", 0: "Normal"}),
-                         color_discrete_map={"Anomaly": "#e05a5a", "Normal": "#7c6af766"},
+                         color_discrete_map={"Anomaly": "#e05a5a", "Normal": "rgba(124,106,247,0.4)"},
                          labels={"tokens_5min": "Tokens", "total_cost_usd": "Cost (USD)"},
                          title="IsolationForest anomaly detection")
         fig.update_layout(**CHART_LAYOUT)
